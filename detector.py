@@ -8,7 +8,7 @@
 import numpy as np
 from typing import Tuple, List, Dict, Any
 from config import (
-    DETECTOR_CONFIG, 
+    DETECTOR_CONFIG, HumanState,
     get_fall_height_threshold, 
     get_fall_speed_threshold, 
     get_fall_frames_threshold
@@ -39,52 +39,6 @@ class FallDetectionModule:
         self.detection_history = []  # 检测历史记录
         logger.info("摔倒检测状态已重置")
     
-    def _is_pet(self, points: np.ndarray = None, avg_height: float = None, 
-                point_count: int = None, width: float = None) -> bool:
-        """
-        判断是否为宠物（猫/狗等小动物）
-        使用多特征综合判断：
-        1. 高度特征：宠物通常低于0.5米
-        2. 点云密度：宠物点云数量较少
-        3. 宽度特征：宠物体型较窄
-        
-        :param points: 点云数据（可选）
-        :param avg_height: 平均高度（可选）
-        :param point_count: 点云数量（可选）
-        :param width: 宽度（可选）
-        :return: 是否为宠物
-        """
-        # 收集特征信息
-        if points is not None and points.size > 0:
-            if avg_height is None:
-                avg_height = np.mean(points[:, 2])
-            if point_count is None:
-                point_count = len(points)
-            if width is None:
-                width = np.max(points[:, 0]) - np.min(points[:, 0])
-        
-        # 特征判断
-        features = []
-        
-        # 特征1：高度判断（宠物通常低于0.5米）
-        if avg_height is not None:
-            features.append(avg_height < self.pet_height_threshold)
-        
-        # 特征2：点云数量判断（宠物点云较少）
-        if point_count is not None:
-            features.append(point_count < self.pet_point_count_threshold)
-        
-        # 特征3：宽度判断（宠物较窄）
-        if width is not None:
-            features.append(width < self.pet_width_threshold)
-        
-        # 综合判断：至少满足2个特征才判定为宠物
-        if len(features) >= 2:
-            pet_score = sum(features) / len(features)
-            return pet_score >= 0.67  # 至少2/3的特征匹配
-        
-        return False
-
     def detect(self, avg_height: float, avg_vz: float, simulator_state: str = None) -> Tuple[bool, Dict[str, Any]]:
         """
         检测摔倒事件（优化版）
@@ -105,7 +59,7 @@ class FallDetectionModule:
         frames_threshold = get_fall_frames_threshold()
         
         # 优先检查simulator状态：如果已倒地，直接报警
-        if simulator_state == "fallen":
+        if simulator_state == HumanState.FALLEN:
             self.consecutive_frames = frames_threshold
             self.is_fallen = True
             logger.warning(f"检测到摔倒！（状态触发）高度: {avg_height:.2f}m, 速度: {avg_vz:.2f}m/s")

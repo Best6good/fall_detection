@@ -5,6 +5,14 @@
 """
 
 from typing import Tuple
+from enum import Enum
+
+
+class HumanState(str, Enum):
+    STANDING = "standing"
+    WALKING = "walking"
+    FALLING = "falling"
+    FALLEN = "fallen"
 
 # 项目信息
 PROJECT_INFO = {
@@ -24,7 +32,7 @@ SIMULATOR_CONFIG = {
 
 # 预处理配置
 PROCESSOR_CONFIG = {
-    "human_height_range": (0.2, 1.8),  # 人体高度范围（m）
+    "human_height_range": (0.05, 1.8),  # 人体高度范围（m）— 下限0.05m以允许倒地状态点云通过
     "statistical_k": 5,  # 统计滤波邻域点数
     "statistical_std_ratio": 1.0,  # 统计滤波标准差倍数
 }

@@ -8,7 +8,7 @@
 
 import numpy as np
 from typing import Tuple, Optional, List
-from config import SIMULATOR_CONFIG
+from config import SIMULATOR_CONFIG, HumanState, get_noise_level
 from utils import logger
 
 
@@ -115,7 +115,7 @@ class RadarPointCloudSimulator:
 
     def reset(self) -> None:
         """重置到初始状态"""
-        self.state = "standing"  # 当前状态: standing, walking, falling, fallen
+        self.state = HumanState.STANDING  # 当前状态
         self.position = np.array([0.0, 0.0, 1.6])  # 人体中心位置（站立时约1.6m）
         self.fall_progress = 0.0  # 摔倒进度 0-1
         self.trajectory = []  # 轨迹记录
@@ -123,18 +123,16 @@ class RadarPointCloudSimulator:
         self.walk_step = 0.0  # 行走步幅相位
         logger.info("雷达模拟器已重置")
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: HumanState) -> None:
         """
         设置人体状态
-        :param state: 状态名称 (standing/walking/falling/fallen)
+        :param state: 目标状态
         """
-        if state in ["standing", "walking", "falling", "fallen"]:
+        if state in HumanState:
             self.state = state
-            if state == "falling":
+            if state == HumanState.FALLING:
                 self.fall_progress = 0.0
-            logger.info(f"人体状态已切换为: {state}")
-        else:
-            logger.warning(f"无效的状态: {state}")
+            logger.info(f"人体状态已切换为: {state.value}")
 
     def get_state(self) -> str:
         """获取当前状态"""
@@ -142,17 +140,14 @@ class RadarPointCloudSimulator:
 
     def trigger_fall(self) -> None:
         """手动触发摔倒事件"""
-        if self.state == "standing" or self.state == "walking":
-            self.state = "falling"
+        if self.state in (HumanState.STANDING, HumanState.WALKING):
+            self.state = HumanState.FALLING
             self.fall_progress = 0.0
             logger.info("已触发摔倒事件")
 
     def _get_noise_scale(self) -> float:
         """获取当前噪声水平"""
-        noise = SIMULATOR_CONFIG["noise_level"]
-        if isinstance(noise, (list, np.ndarray)):
-            noise = float(noise[0]) if len(noise) > 0 else 0.1
-        return float(noise)
+        return float(get_noise_level())
 
     def _generate_points_for_body_part(self, base_pos: np.ndarray, part_name: str,
                                        noise: float, velocity_z: float = 0.0) -> np.ndarray:
@@ -221,10 +216,9 @@ class RadarPointCloudSimulator:
 
     def _get_skeleton_for_state(self) -> dict:
         """获取当前状态对应的骨架"""
-        if self.state == "fallen":
+        if self.state == HumanState.FALLEN:
             return self.skeleton_fallen
-        # 摔倒过程中插值
-        elif self.state == "falling":
+        elif self.state == HumanState.FALLING:
             return self._interpolate_skeleton(self.fall_progress)
         else:
             return self.skeleton_standing
@@ -403,7 +397,7 @@ class RadarPointCloudSimulator:
         # 检查是否已倒地
         if self.fall_progress >= 1.0:
             self.fall_progress = 1.0
-            self.state = "fallen"
+            self.state = HumanState.FALLEN
             self.position[2] = 0.08  # 倒地时的高度
             logger.info("人体已倒地")
 
@@ -435,13 +429,13 @@ class RadarPointCloudSimulator:
         :return: 点云数组 (N, 4)，列顺序: x, y, z, velocity_z
         """
         try:
-            if self.state == "standing":
+            if self.state == HumanState.STANDING:
                 points = self._generate_standing_points()
-            elif self.state == "walking":
+            elif self.state == HumanState.WALKING:
                 points = self._generate_walking_points()
-            elif self.state == "falling":
+            elif self.state == HumanState.FALLING:
                 points = self._generate_falling_points()
-            elif self.state == "fallen":
+            elif self.state == HumanState.FALLEN:
                 points = self._generate_fallen_points()
             else:
                 points = self._generate_standing_points()

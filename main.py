@@ -18,7 +18,7 @@ from PyQt5.QtGui import QIcon
 
 # 导入自定义模块
 from config import (
-    UI_CONFIG, SIMULATOR_CONFIG, ALARM_CONFIG,
+    UI_CONFIG, SIMULATOR_CONFIG, ALARM_CONFIG, COLOR_CONFIG, HumanState,
     set_fall_height_threshold, set_fall_speed_threshold, 
     set_fall_frames_threshold, set_noise_level, set_sim_speed,
     get_fall_height_threshold, get_fall_speed_threshold,
@@ -289,8 +289,8 @@ class MainWindow(QMainWindow):
         state_layout = QHBoxLayout()
         state_layout.addWidget(QLabel('人体状态:'))
         self.state_combo = QComboBox()
-        self.state_combo.addItems(['standing', 'walking', 'falling', 'fallen'])
-        self.state_combo.setCurrentText('standing')
+        self.state_combo.addItems([s.value for s in HumanState])
+        self.state_combo.setCurrentText(HumanState.STANDING.value)
         self.state_combo.currentTextChanged.connect(self._change_state)
         state_layout.addWidget(self.state_combo)
         sim_layout.addLayout(state_layout)
@@ -377,7 +377,7 @@ class MainWindow(QMainWindow):
         control_menu.addAction(start_action)
         
         stop_action = QAction('停止模拟', self)
-        stop_action.setShortcut(' ')
+        stop_action.setShortcut('Ctrl+Space')
         stop_action.triggered.connect(self._stop_simulation)
         control_menu.addAction(stop_action)
         
@@ -508,7 +508,7 @@ class MainWindow(QMainWindow):
     def _trigger_fall(self):
         """触发摔倒事件"""
         self.simulator.trigger_fall()
-        self.state_combo.setCurrentText('falling')
+        self.state_combo.setCurrentText(HumanState.FALLING.value)
         self.status_bar.showMessage('已触发摔倒模拟...')
 
     def _reset_system(self):
@@ -551,7 +551,7 @@ class MainWindow(QMainWindow):
         
         # 更新状态显示
         self.status_card.set_status('待机')
-        self.state_combo.setCurrentText('standing')
+        self.state_combo.setCurrentText(HumanState.STANDING.value)
         self.status_bar.showMessage('系统已重置')
         self._set_status_bar_color('default')
         
@@ -561,28 +561,25 @@ class MainWindow(QMainWindow):
         """更新一帧数据"""
         if not self.is_running:
             return
-        
+
+        self.frame_count += 1
+
+        # --- 数据生成与预处理 (独立 try) ---
         try:
-            self.frame_count += 1
-            
-            # 获取模拟点云
             raw_points = self.simulator.get_next_frame()
-            
-            # 预处理
             processed_points = self.preprocessor.process(raw_points)
-            
-            # 提取特征
             avg_height, avg_vz = self.preprocessor.get_frame_features(processed_points)
-            
-            # 获取统计信息
             stats = self.preprocessor.get_point_cloud_stats(processed_points)
-            
-            # 更新显示
+        except Exception as e:
+            logger.error(f"数据生成/预处理失败: {e}\n{traceback.format_exc()}")
+            self.status_bar.showMessage(f'数据错误: {str(e)}')
+            return
+
+        # --- UI 更新 (独立 try，失败不影响检测) ---
+        try:
             self.height_label.set_value(f'{avg_height:.2f} m')
             self.speed_label.set_value(f'{avg_vz:.2f} m/s')
             self.consecutive_label.set_value(str(self.detector.get_consecutive_frames()))
-            
-            # 更新点云详情
             self.raw_count_label.set_value(str(len(raw_points)))
             self.filtered_count_label.set_value(str(stats['count']))
             self.min_height_label.set_value(f'{stats["min_height"]:.2f} m')
@@ -591,12 +588,9 @@ class MainWindow(QMainWindow):
             self.min_vz_label.set_value(f'{stats["min_vz"]:.2f} m/s')
             self.max_vz_label.set_value(f'{stats["max_vz"]:.2f} m/s')
             self.std_vz_label.set_value(f'{stats["std_vz"]:.2f}')
-            
-            # 更新曲线图
             self.height_plot.add_data(avg_height)
             self.speed_plot.add_data(avg_vz)
 
-            # 计算人体中心坐标
             if processed_points.size > 0:
                 center_x = np.mean(processed_points[:, 0])
                 center_y = np.mean(processed_points[:, 1])
@@ -605,32 +599,30 @@ class MainWindow(QMainWindow):
             else:
                 center_position = (0.0, 0.0, 1.6)
 
-            # 更新3D可视化 - 传递报警状态
             current_state = self.simulator.get_state()
-            is_alarming = self.has_alarmed or current_state == "fallen"
+            is_alarming = self.has_alarmed or current_state == HumanState.FALLEN
             self.visualizer.update_points(processed_points, current_state, is_alarming)
             self.visualizer.update_trajectory(self.simulator.get_trajectory(), is_alarming)
             self.visualizer.update_center_trajectory(center_position)
-            
-            # 更新骨架可视化
             self.skeleton_visualizer.update_skeleton(processed_points, current_state, self.simulator.fall_progress)
-            
-            # 更新状态栏
+
             elapsed_time = self.start_time.elapsed() / 1000.0
             fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
             self.status_bar.showMessage(
                 f'运行时间: {format_duration(elapsed_time)} | 帧率: {fps:.1f} FPS | 点云数: {len(processed_points)}'
             )
-            
-            # 摔倒检测 - 传入simulator状态以支持状态触发报警
+        except Exception as e:
+            logger.error(f"UI更新失败: {e}\n{traceback.format_exc()}")
+
+        # --- 摔倒检测 (独立 try，与 UI 隔离) ---
+        try:
             if not self.has_alarmed:
+                current_state = self.simulator.get_state()
                 is_fallen, _ = self.detector.detect(avg_height, avg_vz, current_state)
                 if is_fallen:
                     self._trigger_alarm(avg_height, avg_vz)
-        
         except Exception as e:
-            logger.error(f"更新帧时发生错误: {e}\n{traceback.format_exc()}")
-            self.status_bar.showMessage(f'错误: {str(e)}')
+            logger.error(f"摔倒检测失败: {e}\n{traceback.format_exc()}")
 
     def _trigger_alarm(self, height: float, speed: float):
         """触发报警"""
@@ -723,12 +715,14 @@ class MainWindow(QMainWindow):
 
     def _set_status_bar_color(self, color):
         """设置状态栏颜色"""
-        if color == 'red':
-            self.status_bar.setStyleSheet('QStatusBar { background-color: #ffc8c8; color: #000000; }')
-        elif color == 'green':
-            self.status_bar.setStyleSheet('QStatusBar { background-color: #c8ffc8; color: #000000; }')
-        elif color == 'orange':
-            self.status_bar.setStyleSheet('QStatusBar { background-color: #ffffc8; color: #000000; }')
+        bg_map = {
+            'red': '#ffc8c8',
+            'green': '#c8ffc8',
+            'orange': '#ffffc8',
+        }
+        bg = bg_map.get(color)
+        if bg:
+            self.status_bar.setStyleSheet(f'QStatusBar {{ background-color: {bg}; color: #000000; }}')
         else:
             self.status_bar.setStyleSheet('')
 

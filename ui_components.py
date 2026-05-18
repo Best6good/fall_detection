@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QIcon
 
-from config import COLOR_CONFIG, VISUALIZATION_CONFIG, PROJECT_INFO
+from config import COLOR_CONFIG, VISUALIZATION_CONFIG, PROJECT_INFO, HumanState
 from utils import logger
 
 
@@ -50,6 +50,9 @@ class SkeletonVisualizer(FigureCanvas):
         self.joints_scatter = None
         self.bones_plot = []
         
+        # 缓存 colormap
+        self._viridis_cmap = cm.get_cmap('viridis')
+
         self._init_plot()
 
     def _init_skeleton_connections(self):
@@ -179,7 +182,7 @@ class SkeletonVisualizer(FigureCanvas):
         # 腿部特征：z方向最低区域
         
         # 高度分层聚类（模拟Point Cloud Transformer的特征提取）
-        if state in ["standing", "walking"]:
+        if state in (HumanState.STANDING, HumanState.WALKING):
             # 站立状态：人体直立，各部位高度分明
             
             # 识别人体中心线（基于密度估计）
@@ -223,17 +226,14 @@ class SkeletonVisualizer(FigureCanvas):
             skeleton[14, 2] = foot_height        # left_foot
             skeleton[15, 2] = foot_height        # right_foot
             
-        elif state == "falling":
+        elif state == HumanState.FALLING:
             # 摔倒过程：根据点云高度变化推断身体倾斜
-            progress = getattr(self, 'fall_progress', 0.0)
-            
             # 基于点云高度范围判断摔倒程度
             height_range = z_max - z_min
             
             # 如果点云变矮，说明正在倒下
             if height_range < 1.2:  # 人体高度范围缩小
                 # 身体正在倾斜/倒下
-                tilt_angle = (1.2 - height_range) * 0.8
                 
                 # 计算倾斜后的各部位高度
                 base_height = z_min + 0.15  # 身体底部高度
@@ -272,7 +272,7 @@ class SkeletonVisualizer(FigureCanvas):
                 # 还在站立
                 skeleton = self._get_default_skeleton("standing")
                 
-        else:  # fallen
+        else:  # HumanState.FALLEN
             # 倒地状态：所有关节接近地面
             base_height = z_min + 0.10
             
@@ -314,17 +314,16 @@ class SkeletonVisualizer(FigureCanvas):
             [0.10, 0.0, 0.75],  # right_foot
         ])
         
-        if state == "fallen":
-            # 倒地状态骨架（平躺）
+        if state == HumanState.FALLEN:
             fallen_skeleton = standing_skeleton.copy()
-            # 旋转到水平位置
+            # 将站立骨架旋转到水平躺平: x←z, z←-x
+            # 此时 x 变成高度坐标，z 变成左右宽度坐标
             fallen_skeleton[:, [0, 2]] = standing_skeleton[:, [2, 0]] * [1, -1]
+            # 缩放到地面附近 (0.08~0.25m 范围)
             fallen_skeleton[:, 2] = 0.08 + fallen_skeleton[:, 2] * 0.1
             return fallen_skeleton
         
-        elif state == "falling":
-            # 摔倒过程中，插值过渡
-            # 这里简化处理，使用站立骨架
+        elif state == HumanState.FALLING:
             return standing_skeleton
         
         else:
@@ -354,12 +353,12 @@ class SkeletonVisualizer(FigureCanvas):
         self.bones_plot = []
         
         # 绘制骨骼（连接线）- 骨骼颜色与状态对应
-        if state == "standing" or state == "walking":
-            bone_color = '#00cc00'  # 绿色
-        elif state == "falling":
-            bone_color = '#ff8800'  # 橙色
-        else:  # fallen
-            bone_color = '#ff0000'  # 红色
+        if state in (HumanState.STANDING, HumanState.WALKING):
+            bone_color = '#00cc00'
+        elif state == HumanState.FALLING:
+            bone_color = '#ff8800'
+        else:
+            bone_color = '#ff0000'
         
         for (start_idx, end_idx) in self.skeleton_connections:
             start = self.skeleton_joints[start_idx]
@@ -381,9 +380,7 @@ class SkeletonVisualizer(FigureCanvas):
         z_values = self.skeleton_joints[:, 2]
         normalized_z = np.clip((z_values - z_min) / (z_max - z_min + 1e-6), 0, 1)
         
-        # 使用viridis颜色映射
-        cmap = cm.get_cmap('viridis')
-        joint_colors = cmap(normalized_z)
+        joint_colors = self._viridis_cmap(normalized_z)
         
         # 绘制关节点（颜色与点云对应）
         self.joints_scatter = self.ax.scatter(
@@ -397,13 +394,6 @@ class SkeletonVisualizer(FigureCanvas):
         )
         
         self.draw()
-
-    def clear(self):
-        """清空显示"""
-        self.skeleton_joints = np.array([])
-        self._init_plot()
-        self.draw()
-
 
 class PointCloudVisualizer(FigureCanvas):
     """
@@ -481,7 +471,7 @@ class PointCloudVisualizer(FigureCanvas):
         self.points = points
         
         # 更新报警状态
-        if is_alarming and state == "fallen":
+        if is_alarming and state == HumanState.FALLEN:
             self.is_alarming = True
             if not self.flash_timer.isActive():
                 self.flash_timer.start()
@@ -492,16 +482,13 @@ class PointCloudVisualizer(FigureCanvas):
                 self.flash_timer.stop()
         
         # 根据状态选择颜色映射
-        if state == "falling":
-            # 摔倒过程：橙色→红色渐变，点大小增大到50
+        if state == HumanState.FALLING:
             cmap = self.OrRd_cmap
             point_size = 50
-        elif state == "fallen":
-            # 倒地状态：纯红色，可能闪烁
+        elif state == HumanState.FALLEN:
             self._update_points_fallen(points)
             return
         else:
-            # 正常状态：viridis渐变，点大小30
             cmap = self.viridis_cmap
             point_size = VISUALIZATION_CONFIG["point_size"]
         
@@ -592,7 +579,6 @@ class PointCloudVisualizer(FigureCanvas):
 
         if len(self.trajectory) > 1:
             traj_array = np.array(self.trajectory)
-            # 报警时轨迹线变为红色加粗
             color = '#ff0000' if is_alarming else COLOR_CONFIG["trajectory"]
             linewidth = 4 if is_alarming else 2
             
@@ -614,8 +600,6 @@ class PointCloudVisualizer(FigureCanvas):
                 s=30,
                 alpha=0.8
             )
-
-        self.draw()
 
     def update_center_trajectory(self, center_position: tuple) -> None:
         """
@@ -640,8 +624,6 @@ class PointCloudVisualizer(FigureCanvas):
                 color=COLOR_CONFIG["center_trajectory"],
                 linewidth=2
             )
-
-        self.draw()
 
     def show_alarm_marker(self, position: tuple) -> None:
         """

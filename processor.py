@@ -7,7 +7,7 @@
 
 import numpy as np
 from typing import Tuple, Dict, Any
-from config import PROCESSOR_CONFIG
+from config import PROCESSOR_CONFIG, HumanState
 from utils import logger
 
 
@@ -41,31 +41,27 @@ class PointCloudPreprocessor:
 
     def _statistical_filter(self, points: np.ndarray) -> np.ndarray:
         """
-        统计滤波：去除离群噪声点
+        统计滤波：去除离群噪声点（向量化实现）
         :param points: 输入点云 (N, 4)
         :return: 滤波后的点云
         """
-        if points.size == 0 or len(points) <= self.statistical_k:
+        n = len(points)
+        if n == 0 or n <= self.statistical_k:
             return points
-        
-        # 计算每个点到其他点的平均距离
-        distances = []
-        for i in range(len(points)):
-            diff = points[:, :3] - points[i, :3]
-            dist = np.sqrt(np.sum(diff ** 2, axis=1))
-            dist.sort()
-            avg_dist = np.mean(dist[1:self.statistical_k+1])  # 排除自身
-            distances.append(avg_dist)
-        
-        distances = np.array(distances)
-        mean_dist = np.mean(distances)
-        std_dist = np.std(distances)
-        
-        # 保留在标准差范围内的点
-        mask = distances < (mean_dist + self.statistical_std_ratio * std_dist)
+
+        # 向量化计算每对点之间的距离 (N, N)
+        coords = points[:, :3]
+        diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
+        dist = np.sqrt(np.sum(diff ** 2, axis=-1))
+        dist.sort(axis=1)
+        avg_dist = np.mean(dist[:, 1:self.statistical_k + 1], axis=1)
+
+        mean_dist = np.mean(avg_dist)
+        std_dist = np.std(avg_dist)
+        mask = avg_dist < (mean_dist + self.statistical_std_ratio * std_dist)
         filtered = points[mask]
-        
-        logger.debug(f"统计滤波: 输入 {len(points)} 点, 输出 {len(filtered)} 点")
+
+        logger.debug(f"统计滤波: 输入 {n} 点, 输出 {len(filtered)} 点")
         return filtered
 
     def process(self, raw_points: np.ndarray) -> np.ndarray:
