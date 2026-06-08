@@ -30,6 +30,58 @@ SIMULATOR_CONFIG = {
     "fall_speed": -1.2,  # 摔倒垂直速度（m/s）
 }
 
+# 物理毫米波雷达参数
+RADAR_PHYSICS_CONFIG = {
+    # FMCW雷达参数
+    "frequency": 77e9,  # 77GHz毫米波
+    "bandwidth": 4e9,  # 4GHz带宽
+    "chirp_duration": 50e-6,  # 50μs扫频周期
+    "num_rx": 4,  # 4个接收天线
+    "num_tx": 3,  # 3个发射天线
+    "max_range": 5.0,  # 最大探测距离5m
+    "range_resolution": 0.0375,  # 距离分辨率3.75cm
+    "angle_resolution": 0.1,  # 角度分辨率~6°
+    
+    # 人体几何模型参数（米）
+    "body_geometry": {
+        "torso": {"semi_axes": (0.15, 0.10, 0.25)},  # 躯干椭球体半轴
+        "head": {"radius": 0.10},  # 头部球体半径
+        "upper_arm": {"radius": 0.035, "length": 0.30},  # 上臂圆柱体
+        "lower_arm": {"radius": 0.030, "length": 0.25},  # 前臂圆柱体
+        "upper_leg": {"radius": 0.06, "length": 0.40},  # 大腿圆柱体
+        "lower_leg": {"radius": 0.045, "length": 0.35},  # 小腿圆柱体
+    },
+    
+    # 雷达截面积(RCS)参数（平方米）
+    "rcs": {
+        "torso": 0.5,  # 躯干强反射
+        "head": 0.1,  # 头部中等反射
+        "upper_arm": 0.05,  # 上臂弱反射
+        "lower_arm": 0.03,  # 前臂更弱
+        "upper_leg": 0.08,  # 大腿中等反射
+        "lower_leg": 0.04,  # 小腿弱反射
+        "wall": 10.0,  # 墙壁强反射
+        "floor": 5.0,  # 地面强反射
+    },
+    
+    # 噪声模型参数
+    "noise": {
+        "range_std": 0.02,  # 距离噪声标准差2cm
+        "angle_std": 0.05,  # 角度噪声标准差~3°
+        "velocity_std": 0.05,  # 速度噪声标准差0.05m/s
+        "thermal_noise_power": 1e-10,  # 热噪声功率
+        "clutter_density": 0.1,  # 杂波密度（点/m²）
+    },
+    
+    # 环境模型参数
+    "environment": {
+        "room_size": (4.0, 4.0, 2.5),  # 房间尺寸（长宽高）
+        "wall_reflectivity": 0.8,  # 墙壁反射率
+        "floor_reflectivity": 0.6,  # 地面反射率
+        "multipath_enabled": True,  # 是否启用多径效应
+    },
+}
+
 # 预处理配置
 PROCESSOR_CONFIG = {
     "human_height_range": (0.05, 1.8),  # 人体高度范围（m）— 下限0.05m以允许倒地状态点云通过

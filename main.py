@@ -621,7 +621,7 @@ class MainWindow(QMainWindow):
         try:
             if not self.has_alarmed:
                 current_state = self.simulator.get_state()
-                is_fallen, _ = self.detector.detect(avg_height, avg_vz, current_state)
+                is_fallen, _ = self.detector.detect(avg_height, avg_vz, current_state, processed_points)
                 if is_fallen:
                     self._trigger_alarm(avg_height, avg_vz)
         except Exception as e:
