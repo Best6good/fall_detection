@@ -53,6 +53,11 @@ class FallDetectionModule:
             'min_height_std': 0.1,  # 最小高度标准差（宠物高度变化小）
         }
         
+        # Post-fall确认参数
+        self.post_fall_confirmation_frames = 5  # 需要确认的帧数
+        self.post_fall_counter = 0  # post-fall计数器
+        self.is_fall_confirmed = False  # 是否已确认摔倒
+        
         logger.info("物理毫米波雷达摔倒检测模块已初始化")
 
     def reset(self) -> None:
@@ -61,6 +66,11 @@ class FallDetectionModule:
         self.is_fallen = False  # 是否已检测到摔倒
         self.detection_history = []  # 检测历史记录
         self.feature_history = []  # 特征历史记录
+        
+        # Post-fall确认机制
+        self.post_fall_counter = 0  # post-fall计数器
+        self.is_fall_confirmed = False  # 是否已确认摔倒
+        
         logger.info("摔倒检测状态已重置")
     
     def _extract_features(self, points: np.ndarray) -> Dict[str, float]:
@@ -341,7 +351,19 @@ class FallDetectionModule:
         # 连续多帧满足条件才判定为摔倒
         if self.consecutive_frames >= frames_threshold:
             self.is_fallen = True
-            logger.warning(f"检测到摔倒！高度: {avg_height:.2f}m, 速度: {avg_vz:.2f}m/s, 置信度: {confidence:.2f}")
+            
+            # Post-fall确认机制：需要在倒地后保持准静态状态
+            if avg_height < height_threshold and abs(avg_vz) < 0.1:
+                self.post_fall_counter += 1
+                if self.post_fall_counter >= self.post_fall_confirmation_frames:
+                    self.is_fall_confirmed = True
+                    logger.warning(f"检测到摔倒！高度: {avg_height:.2f}m, 速度: {avg_vz:.2f}m/s, 置信度: {confidence:.2f}")
+                    return True, detection_info
+            else:
+                # 如果高度恢复或有明显运动，重置确认计数
+                self.post_fall_counter = 0
+                self.is_fall_confirmed = False
+            
             return True, detection_info
         
         return False, detection_info
@@ -353,6 +375,10 @@ class FallDetectionModule:
     def is_detected(self) -> bool:
         """是否已检测到摔倒"""
         return self.is_fallen
+    
+    def is_confirmed(self) -> bool:
+        """是否已确认摔倒（经过post-fall确认）"""
+        return self.is_fall_confirmed
 
     def get_detection_history(self) -> List[Dict[str, Any]]:
         """获取检测历史记录"""

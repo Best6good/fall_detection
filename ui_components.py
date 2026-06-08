@@ -4,6 +4,7 @@
 自定义UI组件模块
 """
 
+import math
 import numpy as np
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -23,6 +24,68 @@ from PyQt5.QtGui import QIcon
 
 from config import COLOR_CONFIG, VISUALIZATION_CONFIG, PROJECT_INFO, HumanState
 from utils import logger
+
+
+class OneEuroFilter:
+    """
+    1€ Filter - 自适应低通滤波器
+    用于实时噪声滤波，在低速时减少抖动，高速时减少延迟
+    
+    参考论文: Casiez, G., Roussel, N. and Vogel, D. (2012). 
+    1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems.
+    """
+    
+    def __init__(self, min_cutoff=1.0, beta=0.7, d_cutoff=1.0):
+        """
+        初始化1€滤波器
+        
+        :param min_cutoff: 最小截止频率(Hz)，越低越平滑但延迟越大
+        :param beta: 速度系数，越大高速时延迟越小
+        :param d_cutoff: 导数滤波的截止频率
+        """
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self.x_prev = None
+        self.dx_prev = 0.0
+    
+    def __call__(self, x):
+        """
+        滤波单个值
+        
+        :param x: 输入值
+        :return: 滤波后的值
+        """
+        if self.x_prev is None:
+            self.x_prev = float(x)
+            return float(x)
+        
+        # 计算变化量（近似导数）
+        dx = float(x) - self.x_prev
+        
+        # 平滑导数
+        r_d = 2 * math.pi * self.d_cutoff
+        alpha_d = r_d / (r_d + 1)
+        dx_hat = alpha_d * dx + (1 - alpha_d) * self.dx_prev
+        
+        # 根据速度调整截止频率
+        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        
+        # 平滑信号
+        r = 2 * math.pi * cutoff
+        alpha = r / (r + 1)
+        x_hat = alpha * float(x) + (1 - alpha) * self.x_prev
+        
+        # 更新历史值
+        self.x_prev = x_hat
+        self.dx_prev = dx_hat
+        
+        return x_hat
+    
+    def reset(self):
+        """重置滤波器状态"""
+        self.x_prev = None
+        self.dx_prev = 0.0
 
 
 class SkeletonVisualizer(FigureCanvas):
@@ -52,8 +115,40 @@ class SkeletonVisualizer(FigureCanvas):
         
         # 缓存 colormap
         self._viridis_cmap = cm.get_cmap('viridis')
+        
+        # 初始化时序平滑滤波器（16个关节 × 3个坐标）
+        self._init_filters()
+        
+        # 骨骼长度约束（米）
+        self.bone_constraints = {
+            (0, 1): 0.12,   # head-neck
+            (1, 2): 0.15,   # neck-chest
+            (2, 3): 0.20,   # chest-waist
+            (2, 4): 0.18,   # chest-left_shoulder
+            (2, 5): 0.18,   # chest-right_shoulder
+            (4, 6): 0.30,   # left_shoulder-left_elbow
+            (5, 7): 0.30,   # right_shoulder-right_elbow
+            (6, 8): 0.25,   # left_elbow-left_hand
+            (7, 9): 0.25,   # right_elbow-right_hand
+            (3, 10): 0.15,  # waist-left_hip
+            (3, 11): 0.15,  # waist-right_hip
+            (10, 12): 0.40, # left_hip-left_knee
+            (11, 13): 0.40, # right_hip-right_knee
+            (12, 14): 0.35, # left_knee-left_foot
+            (13, 15): 0.35, # right_knee-right_foot
+        }
 
         self._init_plot()
+    
+    def _init_filters(self):
+        """初始化1€滤波器（16个关节 × 3个坐标）"""
+        self.filters = []
+        for i in range(16):
+            joint_filters = []
+            for j in range(3):
+                # 静止时减少抖动，快速运动时减少延迟
+                joint_filters.append(OneEuroFilter(min_cutoff=1.0, beta=0.7, d_cutoff=1.0))
+            self.filters.append(joint_filters)
 
     def _init_skeleton_connections(self):
         """定义人体骨架的连接关系"""
@@ -131,6 +226,9 @@ class SkeletonVisualizer(FigureCanvas):
         self.current_state = "standing"
         self.fall_progress = 0.0
         
+        # 重置滤波器
+        self._init_filters()
+        
         # 清除绘图对象
         if self.joints_scatter:
             self.joints_scatter.remove()
@@ -154,6 +252,8 @@ class SkeletonVisualizer(FigureCanvas):
         2. 高度分层分析（识别人体部位）
         3. 空间聚类（找到身体各部分的中心）
         4. 骨架结构推理
+        5. 时序平滑滤波（1€ Filter）
+        6. 骨骼长度约束
         
         :param points: 点云数据
         :param state: 当前状态
@@ -172,41 +272,20 @@ class SkeletonVisualizer(FigureCanvas):
         
         # ===== 基于点云分析的骨架推断 =====
         
-        # 1. 高度分层分析：识别人体各部位的大致高度
-        # 使用聚类思想：将点云按高度分层
-        z_height = points[:, 2]
-        
-        # 计算身体各部位的特征高度（基于点云分布）
-        # 头部特征：z方向最高点集中区域
-        # 躯干特征：z方向中间区域，密度最高
-        # 腿部特征：z方向最低区域
-        
         # 高度分层聚类（模拟Point Cloud Transformer的特征提取）
         if state in (HumanState.STANDING, HumanState.WALKING):
             # 站立状态：人体直立，各部位高度分明
             
-            # 识别人体中心线（基于密度估计）
-            body_center_z = z_mean
-            
             # 根据点云高度分布推断各部位
-            # 头部：最高点附近
             head_height = z_max - 0.05
-            # 颈部：头部下方
             neck_height = head_height - 0.12
-            # 胸部：身体中心偏上
             chest_height = head_height - 0.20
-            # 腰部：胸部下方
             waist_height = chest_height - 0.18
             
             # 下肢
             hip_height = waist_height - 0.15
             knee_height = hip_height - 0.32
             foot_height = knee_height - 0.28
-            
-            # 上肢（相对于躯干）
-            shoulder_offset = 0.18
-            elbow_offset = 0.30
-            hand_offset = 0.38
             
             # 更新骨架各关节高度
             skeleton[0, 2] = head_height       # head
@@ -228,24 +307,17 @@ class SkeletonVisualizer(FigureCanvas):
             
         elif state == HumanState.FALLING:
             # 摔倒过程：根据点云高度变化推断身体倾斜
-            # 基于点云高度范围判断摔倒程度
             height_range = z_max - z_min
             
-            # 如果点云变矮，说明正在倒下
-            if height_range < 1.2:  # 人体高度范围缩小
+            if height_range < 1.2:
                 # 身体正在倾斜/倒下
+                base_height = z_min + 0.15
                 
-                # 计算倾斜后的各部位高度
-                base_height = z_min + 0.15  # 身体底部高度
-                
-                # 头部最低（撞击地面）
                 head_height = base_height + 0.02
-                # 躯干逐渐增高
                 neck_height = base_height + 0.05
                 chest_height = base_height + 0.10
                 waist_height = base_height + 0.12
                 
-                # 下肢最高（抬起）
                 hip_height = base_height + 0.15
                 knee_height = base_height + 0.20
                 foot_height = base_height + 0.25
@@ -261,7 +333,6 @@ class SkeletonVisualizer(FigureCanvas):
                 skeleton[14, 2] = foot_height
                 skeleton[15, 2] = foot_height
                 
-                # 上肢高度
                 skeleton[4, 2] = chest_height + 0.02
                 skeleton[5, 2] = chest_height + 0.02
                 skeleton[6, 2] = chest_height - 0.05
@@ -269,7 +340,6 @@ class SkeletonVisualizer(FigureCanvas):
                 skeleton[8, 2] = chest_height - 0.10
                 skeleton[9, 2] = chest_height - 0.10
             else:
-                # 还在站立
                 skeleton = self._get_default_skeleton("standing")
                 
         else:  # HumanState.FALLEN
@@ -284,11 +354,40 @@ class SkeletonVisualizer(FigureCanvas):
         skeleton[:, 0] += x_mean - np.mean(skeleton[2:4, 0])  # 以躯干为中心
         skeleton[:, 1] += y_mean - np.mean(skeleton[2:4, 1])
         
-        # 3. 添加处理误差（模拟真实点云处理的误差）
-        # 高度推断误差较大（±0.05m），水平位置误差较小（±0.02m）
-        skeleton[:, 0] += np.random.normal(0, 0.02, 16)
-        skeleton[:, 1] += np.random.normal(0, 0.02, 16)
-        skeleton[:, 2] += np.random.normal(0, 0.05, 16)
+        # 3. 添加较小的处理误差（模拟真实点云处理的误差）
+        # 减小噪声幅度，主要依赖时序滤波
+        skeleton[:, 0] += np.random.normal(0, 0.01, 16)  # 从0.02减小到0.01
+        skeleton[:, 1] += np.random.normal(0, 0.01, 16)  # 从0.02减小到0.01
+        skeleton[:, 2] += np.random.normal(0, 0.02, 16)  # 从0.05减小到0.02
+        
+        # 4. 应用时序平滑滤波（1€ Filter）
+        for i in range(16):
+            for j in range(3):
+                skeleton[i, j] = self.filters[i][j](skeleton[i, j])
+        
+        # 5. 应用骨骼长度约束
+        skeleton = self._apply_bone_constraints(skeleton)
+        
+        return skeleton
+    
+    def _apply_bone_constraints(self, skeleton: np.ndarray) -> np.ndarray:
+        """
+        应用骨骼长度约束，确保骨架符合人体解剖学
+        
+        :param skeleton: 骨架关节坐标数组 (16, 3)
+        :return: 调整后的骨架
+        """
+        for (i, j), expected_len in self.bone_constraints.items():
+            vec = skeleton[j] - skeleton[i]
+            current_len = np.linalg.norm(vec)
+            
+            if current_len > 0.01:  # 避免除零
+                # 允许±20%的弹性范围
+                ratio = current_len / expected_len
+                if ratio < 0.8 or ratio > 1.2:
+                    # 调整到合理范围
+                    target_len = expected_len * np.clip(ratio, 0.8, 1.2)
+                    skeleton[j] = skeleton[i] + vec * (target_len / current_len)
         
         return skeleton
 

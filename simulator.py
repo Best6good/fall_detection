@@ -858,21 +858,36 @@ class RadarPointCloudSimulator:
         return np.vstack(all_points) if all_points else np.array([])
 
     def _generate_fallen_points(self) -> np.ndarray:
-        """生成倒地状态的点云（平躺姿势）"""
+        """
+        生成倒地状态的点云（平躺姿势）
+        改进：倒地时点云更稀疏，高度更符合真实情况
+        """
         noise = self._get_noise_scale()
         skeleton = self.skeleton_fallen
         all_points = []
-
+        
+        # 倒地时点云稀疏度系数（倒地后反射面积变化，点更稀疏）
+        fallen_point_ratio = 0.6  # 只生成60%的点
+        
         for part_name in skeleton.keys():
-            # 使用骨架的绝对坐标，加上水平偏移
             skeleton_pos = np.array(skeleton[part_name])
             base_pos = np.array([
                 skeleton_pos[0] + self.position[0],
                 skeleton_pos[1] + self.position[1],
-                skeleton_pos[2]
+                skeleton_pos[2]  # 保持原始高度（已在skeleton_fallen中定义）
             ])
-
-            part_points = self._generate_points_for_body_part(base_pos, part_name, noise)
+            
+            # 生成该部位的点云
+            part_points = self._generate_points_for_body_part(
+                base_pos, part_name, noise * 1.3  # 倒地时噪声略大
+            )
+            
+            # 倒地时减少点数（模拟反射面积变化）
+            if len(part_points) > 5:
+                n_keep = max(3, int(len(part_points) * fallen_point_ratio))
+                indices = np.random.choice(len(part_points), n_keep, replace=False)
+                part_points = part_points[indices]
+            
             all_points.append(part_points)
 
         return np.vstack(all_points) if all_points else np.array([])
