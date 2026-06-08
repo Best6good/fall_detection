@@ -508,7 +508,10 @@ class MainWindow(QMainWindow):
     def _trigger_fall(self):
         """触发摔倒事件"""
         self.simulator.trigger_fall()
+        # 阻止信号触发 _change_state，避免将 enum 状态覆盖为 string
+        self.state_combo.blockSignals(True)
         self.state_combo.setCurrentText(HumanState.FALLING.value)
+        self.state_combo.blockSignals(False)
         self.status_bar.showMessage('已触发摔倒模拟...')
 
     def _reset_system(self):
