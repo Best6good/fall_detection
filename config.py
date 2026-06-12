@@ -4,7 +4,6 @@
 配置文件 - 集中管理所有系统参数
 """
 
-from typing import Tuple
 from enum import Enum
 
 
@@ -17,7 +16,7 @@ class HumanState(str, Enum):
 # 项目信息
 PROJECT_INFO = {
     "name": "毫米波雷达摔倒检测系统",
-    "version": "2.0.0",
+    "version": "3.2.0",
     "author": "Radar Fall Detection Team",
     "description": "基于毫米波雷达点云的人体摔倒检测原型系统",
 }
@@ -25,7 +24,7 @@ PROJECT_INFO = {
 # 雷达模拟器配置
 SIMULATOR_CONFIG = {
     "frame_rate": 10,  # 雷达帧率（Hz）
-    "point_num_per_frame": 30,  # 每帧模拟点云数量
+    "point_num_per_frame": 50,  # 每帧模拟点云数量（真实雷达20-64点）
     "noise_level": 0.1,  # 噪声水平（0-1）
     "fall_speed": -1.2,  # 摔倒垂直速度（m/s）
 }
@@ -40,7 +39,7 @@ RADAR_PHYSICS_CONFIG = {
     "num_tx": 3,  # 3个发射天线
     "max_range": 5.0,  # 最大探测距离5m
     "range_resolution": 0.0375,  # 距离分辨率3.75cm
-    "angle_resolution": 0.1,  # 角度分辨率~6°
+    "angle_resolution": 0.26,  # 角度分辨率~15° (TI IWR6843实测值)
     
     # 人体几何模型参数（米）
     "body_geometry": {
@@ -53,24 +52,56 @@ RADAR_PHYSICS_CONFIG = {
     },
     
     # 雷达截面积(RCS)参数（平方米）
+    # 参考: Ahn et al. IEEE Access 2020, Herschlein & Hasch EuRAD 2008, Tracy & Young 2006
     "rcs": {
-        "torso": 0.5,  # 躯干强反射
-        "head": 0.1,  # 头部中等反射
-        "upper_arm": 0.05,  # 上臂弱反射
-        "lower_arm": 0.03,  # 前臂更弱
-        "upper_leg": 0.08,  # 大腿中等反射
-        "lower_leg": 0.04,  # 小腿弱反射
+        "torso": 1.0,  # 躯干: -3~+3 dBsm, 中值0 dBsm (1.0 m²)
+        "head": 0.08,  # 头部: -15~-8 dBsm, 中值-11 dBsm (0.08 m²)
+        "upper_arm": 0.05,  # 上臂: -18~-5 dBsm, 中值-13 dBsm (0.05 m²)
+        "lower_arm": 0.03,  # 前臂: -18~-5 dBsm, 中值-15 dBsm (0.03 m²)
+        "upper_leg": 0.12,  # 大腿: -15~-3 dBsm, 中值-9 dBsm (0.12 m²)
+        "lower_leg": 0.06,  # 小腿: -15~-3 dBsm, 中值-12 dBsm (0.06 m²)
         "wall": 10.0,  # 墙壁强反射
         "floor": 5.0,  # 地面强反射
     },
+
+    # 身体部位点云分布权重（真实雷达躯干占40-60%，非按RCS均匀分配）
+    # 参考: van Dorp & Groen 2003, Victor C. Chen 2006
+    "body_point_weights": {
+        "torso": 0.50,  # 躯干: 40-60% (取中值50%)
+        "head": 0.07,  # 头部: 3-10% (取中值7%)
+        "arms": 0.20,  # 双臂合计: 15-25% (取中值20%)
+        "legs": 0.23,  # 双腿合计: 15-25% (取中值23%)
+    },
+
+    # 身体部位检测概率（5m内，post-CFAR）
+    # 参考: TI SWRA587, mmWave radar literature review
+    "detection_prob": {
+        "torso": 0.98,  # 躯干几乎总能检测到
+        "head": 0.55,  # 头部：可变，受头发/帽子影响
+        "upper_arm": 0.65,  # 上臂：8-10m外常丢失
+        "lower_arm": 0.45,  # 前臂：更细，检测率更低
+        "upper_leg": 0.87,  # 大腿：两条大腿常融合为单回波
+        "lower_leg": 0.75,  # 小腿：被近侧腿遮挡
+        "hands": 0.15,  # 手部：几乎检测不到
+        "feet": 0.15,  # 脚部：3-5m外消失在噪声中
+    },
     
-    # 噪声模型参数
+    # 噪声模型参数（受污染高斯模型 Contaminated Gaussian）
+    # 参考: Schumann et al. IEEE ITSC 2019, Lim et al. 2024
     "noise": {
-        "range_std": 0.02,  # 距离噪声标准差2cm
-        "angle_std": 0.05,  # 角度噪声标准差~3°
-        "velocity_std": 0.05,  # 速度噪声标准差0.05m/s
+        # 离群点（inlier）高斯噪声参数
+        "range_std": 0.03,  # 距离噪声标准差3cm (降低以保持点云紧凑)
+        "angle_std": 0.018,  # 角度噪声标准差~1.0° (降低减少横向散射)
+        "velocity_std": 0.08,  # 速度噪声标准差0.08m/s
         "thermal_noise_power": 1e-10,  # 热噪声功率
-        "clutter_density": 0.1,  # 杂波密度（点/m²）
+        "clutter_density": 0.04,  # 杂波密度（点/m²）— 降低以减少随机散点
+        # 受污染高斯模型：epsilon比例的离群点
+        "outlier_fraction": 0.05,  # 5%离群点比例（降低以保持人体轮廓清晰）
+        "range_outlier_scale": 0.06,  # 距离离群点Cauchy尺度(m)
+        "angle_outlier_scale": 0.02,  # 角度离群点Cauchy尺度(rad, ~1.1°)
+        "velocity_outlier_scale": 0.2,  # 速度离群点均匀分布半宽(m/s)
+        # 距离-多普勒耦合系数（FMCW雷达固有特性）
+        "range_doppler_corr": -0.4,  # corr(r_err, v_err) ≈ -0.3~-0.5
     },
     
     # 环境模型参数
@@ -80,13 +111,32 @@ RADAR_PHYSICS_CONFIG = {
         "floor_reflectivity": 0.6,  # 地面反射率
         "multipath_enabled": True,  # 是否启用多径效应
     },
+
+    # 微多普勒参数（行走）
+    # 参考: Victor C. Chen "Micro-Doppler Effect in Radar" 2011
+    "micro_doppler": {
+        "step_frequency": 2.0,  # 步频 (Hz), 典型1.5-2.5
+        "torso_velocity": 1.2,  # 躯干行走速度 (m/s), 典型0.8-1.5
+        "arm_swing_amplitude": 3.0,  # 臂摆峰值速度 (m/s相对身体), 典型2-4
+        "leg_tip_velocity": 5.0,  # 腿尖峰值速度 (m/s), 典型4-6
+        "breathing_amplitude": 0.02,  # 呼吸微动幅度 (m/s)
+    },
+
+    # 摔倒过程参数
+    # 参考: UP-Fall dataset, Wang et al. IEEE Sensors 2022
+    "fall_dynamics": {
+        "peak_velocity": 2.5,  # 摔倒峰值速度 (m/s), 典型1.5-3.0
+        "impact_velocity_drop": 0.85,  # 撞击后速度衰减比例
+        "velocity_blackout_frames": 20,  # 速度中断持续帧数 (>2s @10fps)
+        "rcs_drop_db": 5.0,  # 摔倒后RCS下降 (dB), 典型3-8
+    },
 }
 
 # 预处理配置
 PROCESSOR_CONFIG = {
     "human_height_range": (0.05, 1.8),  # 人体高度范围（m）— 下限0.05m以允许倒地状态点云通过
-    "statistical_k": 5,  # 统计滤波邻域点数
-    "statistical_std_ratio": 1.0,  # 统计滤波标准差倍数
+    "statistical_k": 3,  # 统计滤波邻域点数（从5减到3，适应稀疏点云）
+    "statistical_std_ratio": 1.5,  # 统计滤波标准差倍数（从1.0增到1.5，保留更多点）
 }
 
 # 摔倒检测配置
@@ -100,7 +150,7 @@ DETECTOR_CONFIG = {
 VISUALIZATION_CONFIG = {
     "point_size": 30,  # 点云尺寸（统一设置为30）
     "trajectory_frames": 5,  # 轨迹线帧数
-    "history_seconds": 30,  # 历史数据显示时长（秒）
+    "history_seconds": 60,  # 历史数据显示时长（秒）
     "view_elevation": 45,  # 默认视角仰角（度）
     "view_azimuth": -45,  # 默认视角方位角（度）
 }
@@ -111,11 +161,23 @@ COLOR_CONFIG = {
     "grid": "#aaaaaa",  # 网格线颜色（浅灰色）
     "axis": "#aaaaaa",  # 坐标轴颜色（浅灰色）
     "text": "#ffffff",  # 文本颜色
-    "normal_point": "#00aaff",  # 正常状态点云颜色
-    "falling_point": "#ff8800",  # 摔倒过程点云颜色
-    "fallen_point": "#ff0000",  # 倒地状态点云颜色（纯红色）
-    "trajectory": "#00ff88",  # 轨迹线颜色
+    
+    # 点云状态颜色（更直观）
+    "standing": "#4A90D9",      # 站立：蓝色（静止/冷静）
+    "walking": "#50C878",       # 行走：绿色（运动/正常）
+    "falling": "#FF8C00",       # 摔倒中：橙色（警告）
+    "fallen": "#DC143C",        # 倒地：深红色（危险）
+    
+    # 保留旧配置以兼容
+    "normal_point": "#4A90D9",  # 正常状态点云颜色（蓝色）
+    "falling_point": "#FF8C00", # 摔倒过程点云颜色（橙色）
+    "fallen_point": "#DC143C",  # 倒地状态点云颜色（深红色）
+    
+    # 轨迹线
+    "trajectory": "#ffffff",    # 运动轨迹线颜色（白色）
     "center_trajectory": "#ffffff",  # 人体中心轨迹线颜色（白色）
+    
+    # 其他元素
     "orientation_arrow": "#00ff00",  # 朝向箭头颜色（绿色）
     "status_standby": "#888888",  # 待机状态颜色
     "status_running": "#00cc00",  # 运行状态颜色

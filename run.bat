@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
-echo 正在启动毫米波雷达摔倒检测系统...
+set PYTHONIOENCODING=utf-8
+echo Starting Radar Fall Detection System...
 python main.py
 pause

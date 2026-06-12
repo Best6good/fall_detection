@@ -7,9 +7,9 @@
 """
 
 import numpy as np
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any
 from config import (
-    DETECTOR_CONFIG, RADAR_PHYSICS_CONFIG, HumanState,
+    RADAR_PHYSICS_CONFIG, HumanState,
     get_fall_height_threshold, 
     get_fall_speed_threshold, 
     get_fall_frames_threshold
@@ -75,8 +75,8 @@ class FallDetectionModule:
     
     def _extract_features(self, points: np.ndarray) -> Dict[str, float]:
         """
-        从点云中提取特征
-        :param points: 点云数据 (N, 4)
+        从点云中提取特征（支持5D数据）
+        :param points: 点云数据 (N, 4) 或 (N, 5) [x, y, z, velocity_z, intensity]
         :return: 特征字典
         """
         if points.size == 0:
@@ -88,6 +88,8 @@ class FallDetectionModule:
                 'point_density': 0.0,
                 'width': 0.0,
                 'height_range': 0.0,
+                'avg_intensity': 0.0,
+                'intensity_std': 0.0,
             }
         
         # 基本特征
@@ -116,6 +118,14 @@ class FallDetectionModule:
         else:
             point_density = 0.0
         
+        # 强度特征（5D数据）
+        if points.shape[1] >= 5:
+            avg_intensity = np.mean(points[:, 4])
+            intensity_std = np.std(points[:, 4])
+        else:
+            avg_intensity = 0.0
+            intensity_std = 0.0
+        
         return {
             'avg_height': avg_height,
             'avg_vz': avg_vz,
@@ -124,6 +134,8 @@ class FallDetectionModule:
             'point_density': point_density,
             'width': width,
             'height_range': height_range,
+            'avg_intensity': avg_intensity,
+            'intensity_std': intensity_std,
         }
     
     def _is_pet(self, features: Dict[str, float]) -> Tuple[bool, float]:
@@ -165,18 +177,19 @@ class FallDetectionModule:
         """
         检测摔倒事件（物理雷达优化版）
         基于多特征融合的摔倒检测算法：
-        1. 高度阈值检测
-        2. 速度阈值检测  
-        3. 高度变化率检测
-        4. 速度标准差检测
-        5. 点云密度检测
-        6. 宠物过滤
-        7. 连续帧验证
+        1. 状态过滤（排除坐/蹲/弯腰等稳定低姿态）
+        2. 高度阈值检测
+        3. 速度阈值检测  
+        4. 高度变化率检测
+        5. 速度标准差检测
+        6. 点云密度检测
+        7. 宠物过滤
+        8. 连续帧验证
         
         :param avg_height: 平均高度
         :param avg_vz: 平均垂直速度
-        :param simulator_state: 模拟器状态 (standing/walking/falling/fallen)
-        :param points: 点云数据 (N, 4)，用于提取更多特征
+        :param simulator_state: 模拟器状态
+        :param points: 点云数据 (N, 4/5)
         :return: (是否检测到摔倒, 检测详情)
         """
         # 获取当前阈值
@@ -188,7 +201,6 @@ class FallDetectionModule:
         if points is not None and points.size > 0:
             features = self._extract_features(points)
         else:
-            # 使用基本特征
             features = {
                 'avg_height': avg_height,
                 'avg_vz': avg_vz,
@@ -197,6 +209,8 @@ class FallDetectionModule:
                 'point_density': 0.0,
                 'width': 0.0,
                 'height_range': 0.0,
+                'avg_intensity': 0.0,
+                'intensity_std': 0.0,
             }
         
         # 优先检查simulator状态：如果已倒地，直接报警

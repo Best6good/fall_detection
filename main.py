@@ -4,7 +4,6 @@
 import sys
 import os
 import traceback
-from datetime import datetime
 
 import numpy as np
 
@@ -29,7 +28,7 @@ from processor import PointCloudPreprocessor
 from detector import FallDetectionModule
 from ui_components import (
     PointCloudVisualizer, SkeletonVisualizer, RealTimePlot, StatusCard, DataLabel,
-    AlarmBar, AlarmLogTable, AboutDialog
+    AlarmBar, AlarmLogTable, VisualLegend, ProgramGuide, AboutDialog
 )
 from utils import (
     logger, get_timestamp, get_timestamp_filename, 
@@ -60,6 +59,10 @@ class MainWindow(QMainWindow):
         self.has_alarmed = False
         self.start_time = None
         self.frame_count = 0
+
+        # 质心滑动平均缓冲（消除帧间跳动）
+        self._centroid_buffer = []
+        self._centroid_smooth_window = 5
         
         # 定时器
         self.timer = QTimer()
@@ -119,26 +122,30 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton('开始模拟')
         self.start_btn.setObjectName('start_btn')
         self.start_btn.setIcon(QIcon.fromTheme('media-playback-start'))
+        self.start_btn.setToolTip('开始模拟点云数据流 (快捷键: Space)')
         self.start_btn.clicked.connect(self._start_simulation)
         top_btn_layout.addWidget(self.start_btn)
-        
+
         self.stop_btn = QPushButton('停止模拟')
         self.stop_btn.setObjectName('stop_btn')
         self.stop_btn.setIcon(QIcon.fromTheme('media-playback-stop'))
+        self.stop_btn.setToolTip('停止当前模拟 (快捷键: S)')
         self.stop_btn.clicked.connect(self._stop_simulation)
         self.stop_btn.setEnabled(False)
         top_btn_layout.addWidget(self.stop_btn)
-        
+
         self.fall_btn = QPushButton('触发摔倒')
         self.fall_btn.setObjectName('alarm_btn')
         self.fall_btn.setIcon(QIcon.fromTheme('alert-warning'))
+        self.fall_btn.setToolTip('手动触发摔倒事件 (快捷键: F)')
         self.fall_btn.clicked.connect(self._trigger_fall)
         self.fall_btn.setEnabled(False)
         top_btn_layout.addWidget(self.fall_btn)
-        
+
         self.reset_btn = QPushButton('重置系统')
         self.reset_btn.setObjectName('reset_btn')
         self.reset_btn.setIcon(QIcon.fromTheme('edit-clear'))
+        self.reset_btn.setToolTip('重置所有模块和显示 (快捷键: R)')
         self.reset_btn.clicked.connect(self._reset_system)
         top_btn_layout.addWidget(self.reset_btn)
         
@@ -161,6 +168,16 @@ class MainWindow(QMainWindow):
         self.log_tab = QWidget()
         self._create_log_tab()
         self.tab_widget.addTab(self.log_tab, '报警日志')
+        
+        # 视觉说明标签
+        self.legend_tab = QWidget()
+        self._create_legend_tab()
+        self.tab_widget.addTab(self.legend_tab, '视觉说明')
+        
+        # 程序说明标签
+        self.guide_tab = QWidget()
+        self._create_guide_tab()
+        self.tab_widget.addTab(self.guide_tab, '程序说明')
         
         right_layout.addWidget(self.tab_widget)
         content_layout.addWidget(right_frame, stretch=4)
@@ -252,6 +269,8 @@ class MainWindow(QMainWindow):
         
         # 恢复默认按钮
         reset_params_btn = QPushButton('恢复默认参数')
+        reset_params_btn.setObjectName('reset_params_btn')
+        reset_params_btn.setToolTip('将所有检测参数恢复为默认值')
         reset_params_btn.clicked.connect(self._reset_parameters)
         adjust_layout.addWidget(reset_params_btn)
         
@@ -285,12 +304,19 @@ class MainWindow(QMainWindow):
         nl_layout.addWidget(self.noise_label)
         sim_layout.addLayout(nl_layout)
         
-        # 状态切换
+        # 状态切换（中文标签）
+        self._state_label_map = {
+            '站立': HumanState.STANDING,
+            '行走': HumanState.WALKING,
+            '摔倒中': HumanState.FALLING,
+            '倒地': HumanState.FALLEN,
+        }
+        self._state_reverse_map = {v: k for k, v in self._state_label_map.items()}
         state_layout = QHBoxLayout()
         state_layout.addWidget(QLabel('人体状态:'))
         self.state_combo = QComboBox()
-        self.state_combo.addItems([s.value for s in HumanState])
-        self.state_combo.setCurrentText(HumanState.STANDING.value)
+        self.state_combo.addItems(list(self._state_label_map.keys()))
+        self.state_combo.setCurrentText('站立')
         self.state_combo.currentTextChanged.connect(self._change_state)
         state_layout.addWidget(self.state_combo)
         sim_layout.addLayout(state_layout)
@@ -302,37 +328,53 @@ class MainWindow(QMainWindow):
     def _create_details_tab(self):
         """创建点云详情标签页"""
         layout = QVBoxLayout(self.details_tab)
-        
+
         # 点云统计
         stats_group = QGroupBox('点云统计')
         stats_layout = QVBoxLayout(stats_group)
-        
+
         self.raw_count_label = DataLabel('原始点云数量', '--')
         stats_layout.addWidget(self.raw_count_label)
-        
+
         self.filtered_count_label = DataLabel('滤波后点云数量', '--')
         stats_layout.addWidget(self.filtered_count_label)
-        
+
         self.min_height_label = DataLabel('最小高度', '-- m')
         stats_layout.addWidget(self.min_height_label)
-        
+
         self.max_height_label = DataLabel('最大高度', '-- m')
         stats_layout.addWidget(self.max_height_label)
-        
+
         self.avg_height_label = DataLabel('平均高度', '-- m')
         stats_layout.addWidget(self.avg_height_label)
-        
+
         self.min_vz_label = DataLabel('最小速度', '-- m/s')
         stats_layout.addWidget(self.min_vz_label)
-        
+
         self.max_vz_label = DataLabel('最大速度', '-- m/s')
         stats_layout.addWidget(self.max_vz_label)
-        
+
         self.std_vz_label = DataLabel('速度标准差', '--')
         stats_layout.addWidget(self.std_vz_label)
-        
+
+        # 新增统计信息
+        self.avg_intensity_label = DataLabel('平均反射强度', '--')
+        stats_layout.addWidget(self.avg_intensity_label)
+
+        self.centroid_x_label = DataLabel('质心 X', '-- m')
+        stats_layout.addWidget(self.centroid_x_label)
+
+        self.centroid_y_label = DataLabel('质心 Y', '-- m')
+        stats_layout.addWidget(self.centroid_y_label)
+
+        self.centroid_z_label = DataLabel('质心 Z', '-- m')
+        stats_layout.addWidget(self.centroid_z_label)
+
+        self.density_label = DataLabel('点云密度', '-- pts/m²')
+        stats_layout.addWidget(self.density_label)
+
         layout.addWidget(stats_group)
-        
+
         layout.addStretch()
 
     def _create_log_tab(self):
@@ -346,15 +388,35 @@ class MainWindow(QMainWindow):
         # 操作按钮
         btn_layout = QHBoxLayout()
         
-        export_btn = QPushButton('导出日志')
+        export_btn = QPushButton('导出CSV')
+        export_btn.setToolTip('将报警日志导出为CSV文件')
         export_btn.clicked.connect(self._export_logs)
         btn_layout.addWidget(export_btn)
         
         clear_btn = QPushButton('清除日志')
+        clear_btn.setToolTip('清空所有报警日志记录')
         clear_btn.clicked.connect(self._clear_logs)
         btn_layout.addWidget(clear_btn)
         
         layout.addLayout(btn_layout)
+
+    def _create_legend_tab(self):
+        """创建视觉说明标签页"""
+        layout = QVBoxLayout(self.legend_tab)
+        
+        # 添加图例组件
+        self.visual_legend = VisualLegend()
+        layout.addWidget(self.visual_legend)
+        
+        layout.addStretch()
+
+    def _create_guide_tab(self):
+        """创建程序说明标签页"""
+        layout = QVBoxLayout(self.guide_tab)
+        
+        # 添加程序说明组件
+        self.program_guide = ProgramGuide()
+        layout.addWidget(self.program_guide)
 
     def _create_menu_bar(self):
         """创建菜单栏"""
@@ -446,11 +508,13 @@ class MainWindow(QMainWindow):
         self.noise_label.setText(f'{noise:.2f}')
         logger.info(f"噪声水平已更新: {noise:.2f}")
 
-    def _change_state(self, state):
-        """切换人体状态"""
+    def _change_state(self, state_label):
+        """切换人体状态（中文标签）"""
         if self.is_running:
-            self.simulator.set_state(state)
-            logger.info(f"人体状态已切换为: {state}")
+            state_enum = self._state_label_map.get(state_label)
+            if state_enum:
+                self.simulator.set_state(state_enum)
+                logger.info(f"人体状态已切换为: {state_label}")
 
     def _reset_parameters(self):
         """恢复默认参数"""
@@ -508,9 +572,9 @@ class MainWindow(QMainWindow):
     def _trigger_fall(self):
         """触发摔倒事件"""
         self.simulator.trigger_fall()
-        # 阻止信号触发 _change_state，避免将 enum 状态覆盖为 string
+        # 阻止信号触发 _change_state，避免重复设置
         self.state_combo.blockSignals(True)
-        self.state_combo.setCurrentText(HumanState.FALLING.value)
+        self.state_combo.setCurrentText('摔倒中')
         self.state_combo.blockSignals(False)
         self.status_bar.showMessage('已触发摔倒模拟...')
 
@@ -525,6 +589,7 @@ class MainWindow(QMainWindow):
         # 重置所有模块
         self.simulator.reset()
         self.detector.reset()
+        self._centroid_buffer.clear()
         
         # 清空显示
         self.visualizer.clear()
@@ -546,7 +611,12 @@ class MainWindow(QMainWindow):
         self.min_vz_label.set_value('-- m/s')
         self.max_vz_label.set_value('-- m/s')
         self.std_vz_label.set_value('--')
-        
+        self.avg_intensity_label.set_value('--')
+        self.centroid_x_label.set_value('-- m')
+        self.centroid_y_label.set_value('-- m')
+        self.centroid_z_label.set_value('-- m')
+        self.density_label.set_value('-- pts/m²')
+
         # 更新按钮状态
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -554,7 +624,7 @@ class MainWindow(QMainWindow):
         
         # 更新状态显示
         self.status_card.set_status('待机')
-        self.state_combo.setCurrentText(HumanState.STANDING.value)
+        self.state_combo.setCurrentText('站立')
         self.status_bar.showMessage('系统已重置')
         self._set_status_bar_color('default')
         
@@ -591,23 +661,45 @@ class MainWindow(QMainWindow):
             self.min_vz_label.set_value(f'{stats["min_vz"]:.2f} m/s')
             self.max_vz_label.set_value(f'{stats["max_vz"]:.2f} m/s')
             self.std_vz_label.set_value(f'{stats["std_vz"]:.2f}')
+            # 新增统计信息
+            self.avg_intensity_label.set_value(f'{stats["avg_intensity"]:.3f}')
+            self.centroid_x_label.set_value(f'{stats["centroid_x"]:.2f} m')
+            self.centroid_y_label.set_value(f'{stats["centroid_y"]:.2f} m')
+            self.centroid_z_label.set_value(f'{stats["centroid_z"]:.2f} m')
+            self.density_label.set_value(f'{stats["density"]:.1f} pts/m²')
             self.height_plot.add_data(avg_height)
             self.speed_plot.add_data(avg_vz)
 
-            if processed_points.size > 0:
-                center_x = np.mean(processed_points[:, 0])
-                center_y = np.mean(processed_points[:, 1])
-                center_z = np.mean(processed_points[:, 2])
-                center_position = (center_x, center_y, center_z)
-            else:
-                center_position = (0.0, 0.0, 1.6)
-
             current_state = self.simulator.get_state()
+            # 先更新骨架（内部会计算多帧融合质心）
+            self.skeleton_visualizer.update_skeleton(
+                processed_points, current_state,
+                self.simulator.fall_progress, self.simulator.walk_phase
+            )
+
+            # 使用骨架的融合质心作为统一的位置数据源
+            if self.skeleton_visualizer.fused_centroid is not None:
+                raw_centroid = self.skeleton_visualizer.fused_centroid
+            elif processed_points.size > 0:
+                raw_centroid = (float(np.median(processed_points[:, 0])),
+                                float(np.median(processed_points[:, 1])),
+                                float(np.median(processed_points[:, 2])))
+            else:
+                raw_centroid = (0.0, 0.0, 1.6)
+
+            # 质心滑动平均平滑（消除帧间跳动）
+            self._centroid_buffer.append(raw_centroid)
+            if len(self._centroid_buffer) > self._centroid_smooth_window:
+                self._centroid_buffer.pop(0)
+            center_position = (
+                float(np.mean([p[0] for p in self._centroid_buffer])),
+                float(np.mean([p[1] for p in self._centroid_buffer])),
+                float(np.mean([p[2] for p in self._centroid_buffer])),
+            )
+
             is_alarming = self.has_alarmed or current_state == HumanState.FALLEN
-            self.visualizer.update_points(processed_points, current_state, is_alarming)
-            self.visualizer.update_trajectory(self.simulator.get_trajectory(), is_alarming)
+            self.visualizer.update_points(processed_points, current_state, is_alarming, center_position)
             self.visualizer.update_center_trajectory(center_position)
-            self.skeleton_visualizer.update_skeleton(processed_points, current_state, self.simulator.fall_progress)
 
             elapsed_time = self.start_time.elapsed() / 1000.0
             fps = self.frame_count / elapsed_time if elapsed_time > 0 else 0
@@ -653,14 +745,14 @@ class MainWindow(QMainWindow):
         self.height_plot.add_alarm_marker(len(self.height_plot.data))
         self.speed_plot.add_alarm_marker(len(self.speed_plot.data))
         
-        # 在3D视图中显示报警标记和更新点云/轨迹为报警状态
+        # 在3D视图中显示报警标记
         alarm_pos = self.simulator.get_center_position()
         self.visualizer.show_alarm_marker(alarm_pos)
-        self.visualizer.update_trajectory(self.simulator.get_trajectory(), is_alarming=True)
         
         # 记录报警日志
         timestamp = get_timestamp()
-        self.log_table.add_log(timestamp, height, speed)
+        consecutive = self.detector.get_consecutive_frames()
+        self.log_table.add_log(timestamp, height, speed, consecutive)
         
         # 播放蜂鸣报警声
         if ALARM_CONFIG["enable_sound"]:
@@ -680,7 +772,8 @@ class MainWindow(QMainWindow):
         msg_box.setText('检测到人员摔倒！')
         msg_box.setInformativeText(f'报警时间: {timestamp}\n'
                                 f'检测高度: {height:.2f}m\n'
-                                f'检测速度: {speed:.2f}m/s\n\n'
+                                f'检测速度: {speed:.2f}m/s\n'
+                                f'连续满足帧数: {consecutive}\n\n'
                                 '请立即前往现场查看！')
         msg_box.setStyleSheet("""
             QMessageBox { background-color: #353535; }
@@ -755,6 +848,25 @@ class MainWindow(QMainWindow):
         """显示关于对话框"""
         dialog = AboutDialog(self)
         dialog.exec_()
+
+    def keyPressEvent(self, event):
+        """键盘快捷键"""
+        key = event.key()
+        if key == Qt.Key_Space:
+            if not self.is_running and not self.has_alarmed:
+                self._start_simulation()
+            elif self.is_running:
+                self._stop_simulation()
+        elif key == Qt.Key_S:
+            if self.is_running:
+                self._stop_simulation()
+        elif key == Qt.Key_F:
+            if self.is_running:
+                self._trigger_fall()
+        elif key == Qt.Key_R:
+            self._reset_system()
+        else:
+            super().keyPressEvent(event)
 
     def closeEvent(self, event):
         """关闭窗口事件"""

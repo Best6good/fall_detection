@@ -7,8 +7,8 @@
 """
 
 import numpy as np
-from typing import Tuple, Dict, Any, Optional
-from config import PROCESSOR_CONFIG, RADAR_PHYSICS_CONFIG, HumanState
+from typing import Tuple, Dict, Any
+from config import PROCESSOR_CONFIG, RADAR_PHYSICS_CONFIG
 from utils import logger
 
 
@@ -99,7 +99,9 @@ class PointCloudPreprocessor:
     def _velocity_filter(self, points: np.ndarray) -> np.ndarray:
         """
         速度滤波：去除静态杂波（速度接近0的点）
-        :param points: 输入点云 (N, 4)
+        改进：对站立状态更友好，保留低速点
+        
+        :param points: 输入点云 (N, 4) 或 (N, 5)
         :return: 滤波后的点云
         """
         if points.size == 0:
@@ -108,34 +110,34 @@ class PointCloudPreprocessor:
         # 计算速度绝对值
         velocity_magnitude = np.abs(points[:, 3])
         
-        # 保留速度大于阈值的点（运动目标）
-        # 但也保留一些低速点（可能是在移动的人体部位）
-        velocity_mask = velocity_magnitude > self.velocity_threshold * 0.5
+        # 大幅放宽速度阈值：保留绝大部分点
+        # 只过滤掉速度极低的点（可能是静态杂波）
+        velocity_mask = velocity_magnitude > self.velocity_threshold * 0.05  # 从0.2降到0.05
         
         # 如果过滤后点数太少，放宽条件
         filtered = points[velocity_mask]
-        if len(filtered) < 3 and len(points) > 3:
-            # 保留速度最大的前50%点
+        if len(filtered) < 8 and len(points) > 8:
+            # 保留速度最大的前90%点
             velocity_indices = np.argsort(velocity_magnitude)[::-1]
-            top_half = velocity_indices[:len(velocity_indices)//2]
-            filtered = points[top_half]
+            top_90 = velocity_indices[:int(len(velocity_indices) * 0.9)]
+            filtered = points[top_90]
         
         logger.debug(f"速度滤波: 输入 {len(points)} 点, 输出 {len(filtered)} 点")
         return filtered
     
-    def _density_filter(self, points: np.ndarray, min_points: int = 3) -> np.ndarray:
+    def _density_filter(self, points: np.ndarray, min_points: int = 1) -> np.ndarray:
         """
         密度过滤：去除过于稀疏的区域（可能是噪声）
         :param points: 输入点云 (N, 4)
-        :param min_points: 最小点数阈值
+        :param min_points: 最小点数阈值（设为1，保留所有有效点）
         :return: 滤波后的点云
         """
         if points.size == 0 or len(points) < min_points:
             return points
-        
+
         # 使用简单的网格密度过滤
         # 将空间划分为网格，只保留包含足够点的网格
-        grid_size = 0.2  # 20cm网格
+        grid_size = 0.15  # 15cm网格，更精细
         
         # 计算网格索引
         grid_x = np.floor(points[:, 0] / grid_size).astype(int)
@@ -194,7 +196,7 @@ class PointCloudPreprocessor:
     def get_frame_features(self, points: np.ndarray) -> Tuple[float, float]:
         """
         获取单帧点云的特征
-        :param points: 点云数据
+        :param points: 点云数据 (N, 4) 或 (N, 5)
         :return: (平均高度, 平均垂直速度)
         """
         if points.size == 0:
@@ -204,6 +206,28 @@ class PointCloudPreprocessor:
         avg_vz = np.mean(points[:, 3])
         
         return (avg_height, avg_vz)
+    
+    def get_intensity_features(self, points: np.ndarray) -> Dict[str, float]:
+        """
+        获取强度相关特征（5D点云）
+        :param points: 点云数据 (N, 5) [x, y, z, velocity_z, intensity]
+        :return: 强度特征字典
+        """
+        if points.size == 0 or points.shape[1] < 5:
+            return {
+                'avg_intensity': 0.0,
+                'max_intensity': 0.0,
+                'min_intensity': 0.0,
+                'intensity_std': 0.0,
+            }
+        
+        intensity = points[:, 4]
+        return {
+            'avg_intensity': float(np.mean(intensity)),
+            'max_intensity': float(np.max(intensity)),
+            'min_intensity': float(np.min(intensity)),
+            'intensity_std': float(np.std(intensity)),
+        }
     
     def get_advanced_features(self, points: np.ndarray) -> Dict[str, float]:
         """
@@ -271,10 +295,22 @@ class PointCloudPreprocessor:
                 'max_vz': 0.0,
                 'avg_vz': 0.0,
                 'std_vz': 0.0,
+                'avg_intensity': 0.0,
+                'centroid_x': 0.0,
+                'centroid_y': 0.0,
+                'centroid_z': 0.0,
+                'density': 0.0,
             }
-        
+
+        count = len(points)
+        x_range = np.max(points[:, 0]) - np.min(points[:, 0])
+        y_range = np.max(points[:, 1]) - np.min(points[:, 1])
+        area = max(x_range * y_range, 0.01)  # 避免除零
+
+        avg_intensity = float(np.mean(points[:, 4])) if points.shape[1] >= 5 else 0.0
+
         return {
-            'count': len(points),
+            'count': count,
             'min_height': float(np.min(points[:, 2])),
             'max_height': float(np.max(points[:, 2])),
             'avg_height': float(np.mean(points[:, 2])),
@@ -282,6 +318,11 @@ class PointCloudPreprocessor:
             'max_vz': float(np.max(points[:, 3])),
             'avg_vz': float(np.mean(points[:, 3])),
             'std_vz': float(np.std(points[:, 3])),
+            'avg_intensity': avg_intensity,
+            'centroid_x': float(np.mean(points[:, 0])),
+            'centroid_y': float(np.mean(points[:, 1])),
+            'centroid_z': float(np.mean(points[:, 2])),
+            'density': float(count / area),
         }
 
     def set_height_range(self, min_h: float, max_h: float) -> None:

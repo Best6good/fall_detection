@@ -123,6 +123,24 @@ QPushButton#reset_btn {
     color: #ffffff;
 }
 
+QPushButton#reset_btn:hover {
+    background-color: #777777;
+}
+
+/* 恢复默认参数按钮 */
+QPushButton#reset_params_btn {
+    background-color: #555555;
+    color: #cccccc;
+    font-size: 12px;
+    padding: 6px 12px;
+    min-width: 100px;
+}
+
+QPushButton#reset_params_btn:hover {
+    background-color: #666666;
+    color: #ffffff;
+}
+
 /* 滑块 */
 QSlider {
     background-color: #3a3a3a;

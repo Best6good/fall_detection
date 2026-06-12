@@ -8,7 +8,7 @@ import os
 import csv
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 # 配置Matplotlib中文支持
 import matplotlib
@@ -31,8 +31,22 @@ logger.setLevel(logging.INFO)
 # 创建日志格式器
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# 创建控制台处理器
-console_handler = logging.StreamHandler()
+# 创建控制台处理器（设置编码为UTF-8）
+import sys
+import io
+
+# Windows 终端编码修复
+if sys.platform == 'win32':
+    # 尝试设置控制台编码
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except:
+        # 如果 reconfigure 不可用，使用 TextIOWrapper
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
